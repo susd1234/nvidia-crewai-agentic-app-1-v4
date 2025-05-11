@@ -1,0 +1,17 @@
+crewai
+crewai-tools
+langchain
+python-dotenv
+beautifulsoup4
+requests
+pydantic
+fastapi
+uvicorn
+gradio
+numpy
+python-jose[cryptography]
+passlib[bcrypt]
+python-multipart
+ipykernel
+jupyter
+langchain_nvidia_ai_endpoints
