@@ -1,6 +1,7 @@
 import getpass
 import os
 from dotenv import load_dotenv, find_dotenv
+import datetime
 
 
 # Load environment variables from .env file
@@ -99,6 +100,28 @@ nest_asyncio.apply()
 project_url = input(
     "Please enter the GitHub repository URL (e.g., https://github.com/username/repository): "
 ).strip()
+
+# Get repository name from URL for folder naming
+repo_name = project_url.split("/")[-1]
+
+# Create a timestamp for the execution
+timestamp = datetime.datetime.now().strftime("%d%b%y_%H%M%S")
+execution_folder = f"{repo_name}_{timestamp}"
+
+# Create workdir if it doesn't exist
+workdir_path = Path("workdir")
+workdir_path.mkdir(exist_ok=True)
+
+# Create execution folder
+execution_path = workdir_path / execution_folder
+execution_path.mkdir(exist_ok=True)
+
+# Create input and output folders
+input_path = execution_path / "input"
+input_path.mkdir(exist_ok=True)
+
+output_path = execution_path / "output"
+output_path.mkdir(exist_ok=True)
 
 # # Validate the URL format
 # if not project_url.startswith("https://github.com/") or len(project_url.split("/")) < 5:
@@ -266,8 +289,9 @@ class DocumentationState(BaseModel):
     """
 
     project_url: str = project_url
-    repo_path: Path = "workdir/"
+    repo_path: str = str(input_path)
     docs: List[str] = []
+    output_path: str = str(output_path)
 
 
 class CreateDocumentationFlow(Flow[DocumentationState]):
@@ -276,15 +300,16 @@ class CreateDocumentationFlow(Flow[DocumentationState]):
     @start()
     def clone_repo(self):
         print(f"# Cloning repository: {self.state.project_url}\n")
-        # Extract repo name from URL
-        repo_name = self.state.project_url.split("/")[-1]
-        self.state.repo_path = f"{self.state.repo_path}{repo_name}"
 
         # Check if directory exists
-        if Path(self.state.repo_path).exists():
+        if Path(self.state.repo_path).exists() and any(
+            Path(self.state.repo_path).iterdir()
+        ):
             print(f"# Repository directory already exists at {self.state.repo_path}\n")
             subprocess.run(["rm", "-rf", self.state.repo_path])
             print("# Removed existing directory\n")
+            # Recreate the directory
+            Path(self.state.repo_path).mkdir(exist_ok=True)
 
         # Clone the repository
         subprocess.run(["git", "clone", self.state.project_url, self.state.repo_path])
@@ -293,7 +318,9 @@ class CreateDocumentationFlow(Flow[DocumentationState]):
     @listen(clone_repo)
     def plan_docs(self):
         print(f"# Planning documentation for: {self.state.repo_path}\n")
-        result = planning_crew.kickoff(inputs={"repo_path": self.state.repo_path})
+        # Convert Path to string for CrewAI
+        repo_path_str = str(self.state.repo_path)
+        result = planning_crew.kickoff(inputs={"repo_path": repo_path_str})
         print(f"# Planned docs for {self.state.repo_path}:")
         for doc in result.pydantic.docs:
             print(f"    - {doc.title}")
@@ -302,10 +329,10 @@ class CreateDocumentationFlow(Flow[DocumentationState]):
     @listen(plan_docs)
     def save_plan(self, plan):
         # Create docs directory if it doesn't exist
-        docs_dir = Path("docs")
+        docs_dir = Path(self.state.output_path)
         docs_dir.mkdir(exist_ok=True)
 
-        with open("docs/plan.json", "w") as f:
+        with open(docs_dir / "plan.json", "w") as f:
             f.write(plan.raw)
 
     @listen(plan_docs)
@@ -314,7 +341,7 @@ class CreateDocumentationFlow(Flow[DocumentationState]):
             print(f"\n# Creating documentation for: {doc.title}")
             result = documentation_crew.kickoff(
                 inputs={
-                    "repo_path": self.state.repo_path,
+                    "repo_path": str(self.state.repo_path),
                     "title": doc.title,
                     "overview": plan.pydantic.overview,
                     "description": doc.description,
@@ -324,8 +351,8 @@ class CreateDocumentationFlow(Flow[DocumentationState]):
                 }
             )
 
-            # Save documentation to file in docs folder
-            docs_dir = Path("docs")
+            # Save documentation to file in output folder
+            docs_dir = Path(self.state.output_path)
             docs_dir.mkdir(exist_ok=True)
             title = doc.title.lower().replace(" ", "_") + ".mdx"
             self.state.docs.append(str(docs_dir / title))
@@ -354,15 +381,18 @@ flow.kickoff()
 from IPython.display import Markdown, display
 import pathlib
 
-docs_dir = pathlib.Path("docs")
+docs_dir = output_path
 print("Documentation files generated:")
 for doc_file in docs_dir.glob("*.mdx"):
-    print(f"- docs/{doc_file.name}")
+    print(f"- {doc_file}")
 
 print("\nDisplaying contents of first doc:\n")
-first_doc = pathlib.Path(flow.state.docs[0]).read_text()
-try:
-    display(Markdown(first_doc))
-except NameError:
-    # If not running in Jupyter, just print the markdown
-    print(first_doc)
+if flow.state.docs:
+    first_doc = Path(flow.state.docs[0]).read_text()
+    try:
+        display(Markdown(first_doc))
+    except NameError:
+        # If not running in Jupyter, just print the markdown
+        print(first_doc)
+else:
+    print("No documentation files were generated.")
