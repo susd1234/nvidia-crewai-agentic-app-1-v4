@@ -126,14 +126,54 @@ if __name__ == "__main__":
 
         # Start the API server with appropriate log level
         logger.info("Starting Uvicorn server...")
-        uvicorn.run(
-            "api:app",
-            host="0.0.0.0",
-            port=8000,
-            reload=True,
-            log_level="error",  # Change log level to error to reduce noise
-            access_log=False,  # Disable access logs
-        )
+
+        # Try different ports if the default is in use
+        ports = [8000, 8001, 8002, 8003, 8004]
+        server_started = False
+
+        for port in ports:
+            try:
+                logger.info(f"Trying to start server on port {port}...")
+
+                # Also update the port in app_ui.py if we're using a non-default port
+                if port != 8000:
+                    with open("app_ui.py", "r") as f:
+                        content = f.read()
+
+                    # Update API base URL
+                    updated_content = content.replace(
+                        'API_BASE_URL = "http://localhost:8000"',
+                        f'API_BASE_URL = "http://localhost:{port}"',
+                    )
+
+                    with open("app_ui.py", "w") as f:
+                        f.write(updated_content)
+
+                    logger.info(f"Updated app_ui.py to use port {port}")
+
+                uvicorn.run(
+                    "api:app",
+                    host="0.0.0.0",
+                    port=port,
+                    reload=True,
+                    log_level="error",  # Change log level to error to reduce noise
+                    access_log=False,  # Disable access logs
+                )
+
+                server_started = True
+                break
+            except OSError as e:
+                if "Address already in use" in str(e):
+                    logger.warning(
+                        f"Port {port} is already in use, trying next port..."
+                    )
+                else:
+                    logger.error(f"Error starting server on port {port}: {e}")
+                    break
+
+        if not server_started:
+            logger.error("Could not start server on any of the configured ports")
+            sys.exit(1)
     except Exception as e:
         logger.error(f"Error starting API server: {e}")
         logger.error(traceback.format_exc())
