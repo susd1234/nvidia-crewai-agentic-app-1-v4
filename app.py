@@ -214,6 +214,7 @@ planning_crew = Crew(
     agents=[code_explorer, documentation_planner],
     tasks=[analyze_codebase, create_documentation_plan],
     verbose=False,
+    callbacks=[agent_logger],
 )
 
 from crewai.tasks import TaskOutput
@@ -303,6 +304,7 @@ documentation_crew = Crew(
     agents=[overview_writer, documentation_reviewer],
     tasks=[draft_documentation, qa_review_documentation],
     verbose=False,
+    callbacks=[agent_logger],
 )
 
 ### --> Create Documentation Flow

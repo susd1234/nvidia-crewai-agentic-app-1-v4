@@ -113,8 +113,8 @@ if __name__ == "__main__":
             except Exception as e:
                 logger.error(f"Failed to set NVIDIA API key: {e}")
                 sys.exit(1)
-        else:
-            logger.info("Using NVIDIA API key from environment variables")
+        # else:
+        #     logger.info("Using NVIDIA API key from environment variables")
 
         # Create workdir if it doesn't exist
         if not os.path.exists("workdir"):
