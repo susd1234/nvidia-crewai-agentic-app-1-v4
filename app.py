@@ -5,152 +5,37 @@ import datetime
 import logging
 import sys
 from pathlib import Path
-
-logging.getLogger("litellm").setLevel(logging.CRITICAL)
-logging.getLogger("httpx").setLevel(logging.CRITICAL)
-logging.getLogger("httpcore").setLevel(logging.CRITICAL)
-
-
-_ = load_dotenv(find_dotenv(), override=True)
-
-if not os.environ.get("NVIDIA_API_KEY", "").startswith("nvapi-"):
-    nvapi_key = getpass.getpass("Enter your NVIDIA API key: ")
-    assert nvapi_key.startswith("nvapi-"), f"{nvapi_key[:5]}... is not a valid key"
-    os.environ["NVIDIA_NIM_API_KEY"] = nvapi_key
-    os.environ["NVIDIA_API_KEY"] = nvapi_key
-
-
 import time
 import threading
-
-
-class LoadingAnimation:
-    def __init__(self):
-        self.stop_event = threading.Event()
-        self.animation_thread = None
-        self.message = ""
-
-    def _animate(self, message="Loading"):
-        self.message = message
-        chars = "/—\\|"
-        logger.debug(f"Starting animation: {message}")
-        while not self.stop_event.is_set():
-            for char in chars:
-                sys.stdout.write("\r" + message + "... " + char)
-                sys.stdout.flush()
-                time.sleep(0.1)
-                if self.stop_event.is_set():
-                    sys.stdout.write("\n")
-                    break
-
-    def start(self, message="Loading"):
-        self.stop_event.clear()
-        logger.info(f"Operation started: {message}")
-        self.animation_thread = threading.Thread(target=self._animate, args=(message,))
-        self.animation_thread.daemon = True
-        self.animation_thread.start()
-
-    def stop(self, completion_message="Complete"):
-        self.stop_event.set()
-        if self.animation_thread:
-            self.animation_thread.join()
-        logger.info(f"Operation completed: {self.message} → {completion_message}")
-        print(f"\r{completion_message} ✓")
-
-
-import dotenv
-from dotenv import dotenv_values
-
-
-def _load_dotenv(*args, **kwargs):
-    env_path = kwargs.get("dotenv_path", ".env")
-    parsed_env = dotenv_values(env_path)
-
-    for key, value in parsed_env.items():
-        if key and value:
-            os.environ[key] = value
-
-
-dotenv.load_dotenv = _load_dotenv
-
-
 import yaml
 import subprocess
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from typing import List, Dict, Optional, Union, Any
+import uuid
+import json
 
 from crewai import Agent, Task, Crew
-
 from crewai.flow.flow import Flow, listen, start
-
 import nest_asyncio
-
-nest_asyncio.apply()
 
 import functools
 import inspect
 import litellm
 
-original_completion = litellm.completion
+# Configure logging first
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
 
-
-@functools.wraps(original_completion)
-def logged_completion(*args, **kwargs):
-    model = kwargs.get("model", "unknown")
-
-    custom_logger = logging.getLogger("documentation_agent")
-    custom_logger.info(f"🤖 LLM Call: {model}")
-
-    return original_completion(*args, **kwargs)
-
-
-litellm.completion = logged_completion
-
-
-class AgentLoggerCallback:
-    def __init__(self, logger):
-        self.logger = logger
-
-    def on_agent_start(self, agent):
-        self.logger.info(f"🧠 Agent starting: {agent.name}")
-
-    def on_agent_end(self, agent, result):
-        self.logger.info(f"✅ Agent completed: {agent.name}")
-
-
+# Set higher logging levels for LiteLLM related loggers
 logging.getLogger("litellm").setLevel(logging.CRITICAL)
 logging.getLogger("LiteLLM").setLevel(logging.CRITICAL)
+logging.getLogger("litellm.cost_calculator").setLevel(logging.CRITICAL)
+logging.getLogger("litellm.llms").setLevel(logging.CRITICAL)
 logging.getLogger("litellm.litellm").setLevel(logging.CRITICAL)
 logging.getLogger("litellm.utils").setLevel(logging.CRITICAL)
-logging.getLogger("litellm.llms.custom").setLevel(logging.CRITICAL)
-logging.getLogger("litellm.llms").setLevel(logging.CRITICAL)
-logging.getLogger("litellm.cost_calculator").setLevel(logging.CRITICAL)
-logging.getLogger("openai").setLevel(logging.CRITICAL)
-logging.getLogger("httpx").setLevel(logging.CRITICAL)
-logging.getLogger("httpcore").setLevel(logging.CRITICAL)
-
-
-project_url = input(
-    "Please enter the GitHub repository URL (e.g., https://github.com/username/repository): "
-).strip()
-
-
-repo_name = project_url.split("/")[-1]
-
-
-timestamp = datetime.datetime.now().strftime("%d%b%y_%H%M%S")
-execution_folder = f"{repo_name}_{timestamp}"
-
-workdir_path = Path("workdir")
-workdir_path.mkdir(exist_ok=True)
-
-execution_path = workdir_path / execution_folder
-execution_path.mkdir(exist_ok=True)
-
-input_path = execution_path / "input"
-input_path.mkdir(exist_ok=True)
-
-output_path = execution_path / "output"
-output_path.mkdir(exist_ok=True)
 
 
 # Configure a custom filter for logs
@@ -171,15 +56,10 @@ class NoLiteLLMFilter(logging.Filter):
         return True
 
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
-
 for handler in logging.root.handlers:
     handler.addFilter(NoLiteLLMFilter())
 
+# Create our logger
 logger = logging.getLogger("documentation_agent")
 logger.setLevel(logging.INFO)
 
@@ -193,6 +73,82 @@ litellm_logger = logging.getLogger("litellm")
 litellm_logger.setLevel(logging.CRITICAL)
 litellm_logger.addHandler(logging.NullHandler())
 litellm_logger.propagate = False
+
+# Disable propagation for LiteLLM loggers
+for logger_name in [
+    "litellm",
+    "LiteLLM",
+    "litellm.cost_calculator",
+    "litellm.llms",
+    "litellm.litellm",
+    "litellm.utils",
+]:
+    logger_obj = logging.getLogger(logger_name)
+    logger_obj.propagate = False
+
+# Now that logger is defined, we can patch litellm
+original_completion = litellm.completion
+
+
+@functools.wraps(original_completion)
+def logged_completion(*args, **kwargs):
+    model = kwargs.get("model", "unknown")
+    custom_logger = logging.getLogger("documentation_agent")
+    custom_logger.info(f"🤖 LLM Call: {model}")
+    return original_completion(*args, **kwargs)
+
+
+litellm.completion = logged_completion
+
+# Monkeypatch LiteLLM cost calculator logging
+try:
+    # Check if the attribute exists before trying to patch it
+    if hasattr(litellm.cost_calculator, "logger"):
+        original_logger = litellm.cost_calculator.logger
+
+        # Create a custom logger that doesn't log selected model name messages
+        class CustomLogger:
+            def __init__(self, original_logger):
+                self.original_logger = original_logger
+
+            def __getattr__(self, name):
+                orig_attr = getattr(self.original_logger, name)
+                if callable(orig_attr):
+                    # For methods like info, debug, warning, etc.
+                    @functools.wraps(orig_attr)
+                    def wrapper(*args, **kwargs):
+                        # Skip logging for specific messages
+                        if args and isinstance(args[0], str):
+                            if "selected model name for cost calculation" in args[0]:
+                                return None  # Don't log this message
+                        return orig_attr(*args, **kwargs)
+
+                    return wrapper
+                return orig_attr
+
+        # Replace the original logger with our filtered version
+        litellm.cost_calculator.logger = CustomLogger(original_logger)
+
+        # Also set the logging level to CRITICAL for good measure
+        original_logger.setLevel(logging.CRITICAL)
+
+        logger.info("Successfully patched LiteLLM cost calculator logging")
+    else:
+        logger.info("litellm.cost_calculator.logger not found, skipping patch")
+except Exception as e:
+    logger.warning(f"Could not patch LiteLLM cost calculator logging: {e}")
+
+
+class AgentLoggerCallback:
+    def __init__(self, logger):
+        self.logger = logger
+
+    def on_agent_start(self, agent):
+        self.logger.info(f"🧠 Agent starting: {agent.name}")
+
+    def on_agent_end(self, agent, result):
+        self.logger.info(f"✅ Agent completed: {agent.name}")
+
 
 # Create an agent logger callback instance
 agent_logger = AgentLoggerCallback(logger)
@@ -350,7 +306,7 @@ documentation_crew = Crew(
 )
 
 ### --> Create Documentation Flow
-from typing import List
+from typing import List, Optional, Any, Dict, Union
 
 
 class DocumentationState(BaseModel):
@@ -358,16 +314,86 @@ class DocumentationState(BaseModel):
     State for the documentation flow
     """
 
-    project_url: str = project_url
-    repo_path: str = str(input_path)
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    project_url: str
+    repo_path: str
     docs: List[str] = []
-    output_path: str = str(output_path)
+    output_path: str
+
+    model_config = {
+        "arbitrary_types_allowed": True,
+        "extra": "allow",
+    }
+
+    @classmethod
+    def create(cls, project_url: str, repo_path: str, output_path: str):
+        """Factory method to create a properly initialized state"""
+        return cls(
+            project_url=project_url,
+            repo_path=repo_path,
+            output_path=output_path,
+            docs=[],
+        )
 
 
 class CreateDocumentationFlow(Flow[DocumentationState]):
+    """Flow for generating documentation from a GitHub repository"""
+
+    def __init__(self):
+        """Initialize the flow without state"""
+        logger.info("Initializing CreateDocumentationFlow")
+        super().__init__()
+        logger.info(f"Flow initialized with state type: {type(self.state)}")
+
+    def _create_initial_state(self) -> DocumentationState:
+        """Create an initial state with default values"""
+        # This method is called by the Flow base class
+        logger.info("Creating initial state for CreateDocumentationFlow")
+        initial_state = DocumentationState(project_url="", repo_path="", output_path="")
+        logger.info(f"Initial state created with id: {initial_state.id}")
+        return initial_state
+
+    def kickoff(self, state: Optional[DocumentationState] = None) -> Any:
+        """
+        Start the flow with a given state
+
+        Args:
+            state: State to use for the flow execution
+        """
+        logger.info(f"Kickoff called with state: {state is not None}")
+
+        if state:
+            # Manually set the state attributes
+            logger.info("Setting state for flow execution")
+            logger.info(f"Current state id: {self.state.id}")
+            logger.info(f"Provided state id: {state.id}")
+
+            # Copy all attributes from the provided state to the flow's state
+            current_state_data = self.state.model_dump()
+            provided_state_data = state.model_dump()
+
+            logger.info(f"Current state keys: {', '.join(current_state_data.keys())}")
+            logger.info(f"Provided state keys: {', '.join(provided_state_data.keys())}")
+
+            for key, value in provided_state_data.items():
+                if key != "id":  # preserve the id from initial state
+                    logger.info(f"Setting state.{key} = {value}")
+                    setattr(self.state, key, value)
+
+            logger.info(f"Flow state set: project_url={self.state.project_url}")
+        else:
+            logger.error("No state provided to kickoff. Cannot continue.")
+            raise ValueError("State is required to run the documentation flow")
+
+        logger.info("Starting flow execution with kickoff")
+        result = super().kickoff()
+        logger.info("Flow execution completed")
+        return result
+
     @start()
     def clone_repo(self):
         logger.info(f"Cloning repository: {self.state.project_url}")
+        logger.info(f"State at clone_repo: {self.state.model_dump()}")
 
         # Check if directory exists
         if Path(self.state.repo_path).exists() and any(
@@ -459,37 +485,73 @@ class CreateDocumentationFlow(Flow[DocumentationState]):
         logger.info(f"Documentation creation completed for: {self.state.repo_path}")
 
 
-flow = CreateDocumentationFlow()
-flow.plot()
+# When running as a standalone script
+if __name__ == "__main__":
+    # Get repository URL from user input
+    project_url = input(
+        "Please enter the GitHub repository URL (e.g., https://github.com/username/repository): "
+    ).strip()
 
-from IPython.display import IFrame
+    # Set up execution paths
+    repo_name = project_url.split("/")[-1]
+    timestamp = datetime.datetime.now().strftime("%d%b%y_%H%M%S")
+    execution_folder = f"{repo_name}_{timestamp}"
 
-IFrame(src="./crewai_flow.html", width="100%", height=400)
+    workdir_path = Path("workdir")
+    workdir_path.mkdir(exist_ok=True)
 
-logger.info("Starting documentation flow")
-try:
+    execution_path = workdir_path / execution_folder
+    execution_path.mkdir(exist_ok=True)
+
+    input_path = execution_path / "input"
+    input_path.mkdir(exist_ok=True)
+
+    output_path = execution_path / "output"
+    output_path.mkdir(exist_ok=True)
+
+    # Create flow instance
     flow = CreateDocumentationFlow()
-    flow.kickoff()
-    logger.info("Documentation flow completed successfully")
-except Exception as e:
-    logger.error(f"Error during documentation flow execution: {e}", exc_info=True)
-    raise
 
-from IPython.display import Markdown, display
-import pathlib
+    # Initialize with state
+    state = DocumentationState(
+        project_url=project_url, repo_path=str(input_path), output_path=str(output_path)
+    )
 
-docs_dir = output_path
-logger.info("Documentation files generated:")
-doc_files = list(docs_dir.glob("*.mdx"))
-for doc_file in doc_files:
-    logger.info(f"- {doc_file}")
+    # Plot the flow (optional)
+    flow.plot()
 
-if doc_files:
-    logger.info("Displaying contents of first doc")
-    first_doc = Path(doc_files[0]).read_text()
+    # Display flow visualization
     try:
-        display(Markdown(first_doc))
-    except NameError:
-        logger.info(f"First document available at: {doc_files[0]}")
-else:
-    logger.warning("No documentation files were generated.")
+        from IPython.display import IFrame
+
+        IFrame(src="./crewai_flow.html", width="100%", height=400)
+    except ImportError:
+        pass
+
+    # Run the documentation flow
+    logger.info("Starting documentation flow")
+    try:
+        flow.kickoff(state=state)
+        logger.info("Documentation flow completed successfully")
+    except Exception as e:
+        logger.error(f"Error during documentation flow execution: {e}", exc_info=True)
+        raise
+
+    # Display results
+    docs_dir = output_path
+    logger.info("Documentation files generated:")
+    doc_files = list(docs_dir.glob("*.mdx"))
+    for doc_file in doc_files:
+        logger.info(f"- {doc_file}")
+
+    if doc_files:
+        logger.info("Displaying contents of first doc")
+        first_doc = Path(doc_files[0]).read_text()
+        try:
+            from IPython.display import Markdown, display
+
+            display(Markdown(first_doc))
+        except (ImportError, NameError):
+            logger.info(f"First document available at: {doc_files[0]}")
+    else:
+        logger.warning("No documentation files were generated.")
