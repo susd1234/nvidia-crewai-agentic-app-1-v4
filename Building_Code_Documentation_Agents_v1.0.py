@@ -2,6 +2,55 @@ import getpass
 import os
 from dotenv import load_dotenv, find_dotenv
 import datetime
+import logging
+import sys
+from pathlib import Path
+
+# Disable all LiteLLM logging before any imports
+logging.getLogger("litellm").setLevel(logging.CRITICAL)
+logging.getLogger("httpx").setLevel(logging.CRITICAL)
+logging.getLogger("httpcore").setLevel(logging.CRITICAL)
+
+# # Configure logging
+# def setup_logging(execution_folder=None):
+#     """Setup logging configuration for the application"""
+#     # logger = logging.getLogger("documentation_agent")
+#     # logger.setLevel(logging.INFO)
+
+#     # # Create formatters
+#     # console_formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+#     # # file_formatter = logging.Formatter(
+#     # #     "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+
+#     # # )
+
+#     logging.basicConfig(
+#         filename=log_file,
+#         level=logging.INFO,
+#         format="%(asctime)s - %(levelname)s - %(message)s",
+#         datefmt="%Y-%m-%d %H:%M:%S",
+#     )
+
+#     # Create console handler
+#     console_handler = logging.StreamHandler(sys.stdout)
+#     console_handler.setLevel(logging.INFO)
+#     console_handler.setFormatter(console_formatter)
+
+#     # Add handlers to logger
+#     logger.addHandler(console_handler)
+
+#     # Add file handler if execution folder is provided
+#     if execution_folder:
+#         log_dir = Path(execution_folder) / "logs"
+#         log_dir.mkdir(exist_ok=True)
+#         log_file = log_dir / "documentation_agent.log"
+
+#         file_handler = logging.FileHandler(log_file)
+#         file_handler.setLevel(logging.DEBUG)
+#         file_handler.setFormatter(file_formatter)
+#         logger.addHandler(file_handler)
+
+#     return logger
 
 
 # Load environment variables from .env file
@@ -15,7 +64,6 @@ if not os.environ.get("NVIDIA_API_KEY", "").startswith("nvapi-"):
 
 ### --> Install Dependencies
 # Create reusable loading animation class
-import sys
 import time
 import threading
 
@@ -24,9 +72,12 @@ class LoadingAnimation:
     def __init__(self):
         self.stop_event = threading.Event()
         self.animation_thread = None
+        self.message = ""
 
     def _animate(self, message="Loading"):
+        self.message = message
         chars = "/—\\|"
+        logger.debug(f"Starting animation: {message}")
         while not self.stop_event.is_set():
             for char in chars:
                 sys.stdout.write("\r" + message + "... " + char)
@@ -38,6 +89,7 @@ class LoadingAnimation:
 
     def start(self, message="Loading"):
         self.stop_event.clear()
+        logger.info(f"Operation started: {message}")
         self.animation_thread = threading.Thread(target=self._animate, args=(message,))
         self.animation_thread.daemon = True
         self.animation_thread.start()
@@ -46,6 +98,7 @@ class LoadingAnimation:
         self.stop_event.set()
         if self.animation_thread:
             self.animation_thread.join()
+        logger.info(f"Operation completed: {self.message} → {completion_message}")
         print(f"\r{completion_message} ✓")
 
 
@@ -78,7 +131,6 @@ dotenv.load_dotenv = _load_dotenv
 # Importing necessary libraries
 import yaml
 import subprocess
-from pathlib import Path
 from pydantic import BaseModel
 
 # Importing Crew related components
@@ -91,6 +143,57 @@ from crewai.flow.flow import Flow, listen, start
 import nest_asyncio
 
 nest_asyncio.apply()
+
+# Set up a custom wrapper to track LLM calls
+import functools
+import inspect
+import litellm
+
+# Store the original completion method
+original_completion = litellm.completion
+
+
+# Patch the litellm.completion method to log when it's called
+@functools.wraps(original_completion)
+def logged_completion(*args, **kwargs):
+    model = kwargs.get("model", "unknown")
+    # Get custom app logger
+    custom_logger = logging.getLogger("documentation_agent")
+    custom_logger.info(f"🤖 LLM Call: {model}")
+
+    # Call the original method
+    return original_completion(*args, **kwargs)
+
+
+# Replace the litellm.completion method with our wrapped version
+litellm.completion = logged_completion
+
+
+# Create a custom callback handler for crewAI Agent activities
+class AgentLoggerCallback:
+    def __init__(self, logger):
+        self.logger = logger
+
+    def on_agent_start(self, agent):
+        self.logger.info(f"🧠 Agent starting: {agent.name}")
+
+    def on_agent_end(self, agent, result):
+        self.logger.info(f"✅ Agent completed: {agent.name}")
+
+
+# Will use this callback when creating agents later
+
+# Silence litellm loggers again after all imports
+logging.getLogger("litellm").setLevel(logging.CRITICAL)
+logging.getLogger("LiteLLM").setLevel(logging.CRITICAL)
+logging.getLogger("litellm.litellm").setLevel(logging.CRITICAL)
+logging.getLogger("litellm.utils").setLevel(logging.CRITICAL)
+logging.getLogger("litellm.llms.custom").setLevel(logging.CRITICAL)
+logging.getLogger("litellm.llms").setLevel(logging.CRITICAL)
+logging.getLogger("litellm.cost_calculator").setLevel(logging.CRITICAL)
+logging.getLogger("openai").setLevel(logging.CRITICAL)
+logging.getLogger("httpx").setLevel(logging.CRITICAL)
+logging.getLogger("httpcore").setLevel(logging.CRITICAL)
 
 ### --> Define the Project URL
 # project_url = "https://github.com/crewAIInc/nvidia-demo"
@@ -122,6 +225,60 @@ input_path.mkdir(exist_ok=True)
 
 output_path = execution_path / "output"
 output_path.mkdir(exist_ok=True)
+
+
+# Configure a custom filter for logs
+class NoLiteLLMFilter(logging.Filter):
+    def filter(self, record):
+        if record.name.startswith("litellm") or "LiteLLM" in record.getMessage():
+            return False
+        if "HTTP Request" in record.getMessage():
+            return False
+        if "cost_calculator" in record.getMessage():
+            return False
+        if "selected model name" in record.getMessage():
+            return False
+        if "llama-3" in record.getMessage():
+            return False
+        if "Wrapper: Completed Call" in record.getMessage():
+            return False
+        return True
+
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+
+# Apply filter to root logger
+for handler in logging.root.handlers:
+    handler.addFilter(NoLiteLLMFilter())
+
+# Create and configure our application logger
+logger = logging.getLogger("documentation_agent")
+logger.setLevel(logging.INFO)
+
+# Add a console handler with the filter
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setLevel(logging.INFO)
+console_handler.addFilter(NoLiteLLMFilter())
+logger.addHandler(console_handler)
+
+# Override default litellm logger behavior by adding a null handler
+litellm_logger = logging.getLogger("litellm")
+litellm_logger.setLevel(logging.CRITICAL)
+litellm_logger.addHandler(logging.NullHandler())
+litellm_logger.propagate = False
+
+# Create an agent logger callback instance
+agent_logger = AgentLoggerCallback(logger)
+
+# logger.info(f"Initialized documentation agent for repository: {project_url}")
+# logger.info(f"Created execution folder: {execution_folder}")
+# logger.info(f"Input path: {input_path}")
+# logger.info(f"Output path: {output_path}")
 
 # # Validate the URL format
 # if not project_url.startswith("https://github.com/") or len(project_url.split("/")) < 5:
@@ -205,11 +362,19 @@ import re
 
 def check_mermaid_syntax(task_output: TaskOutput):
     text = task_output.raw
+    logger.info("Checking Mermaid syntax in documentation output")
 
     # Find all mermaid code blocks in the text
     mermaid_blocks = re.findall(r"```mermaid\n(.*?)\n```", text, re.DOTALL)
 
-    for block in mermaid_blocks:
+    if not mermaid_blocks:
+        logger.debug("No Mermaid blocks found in the output")
+        return (True, task_output)
+
+    logger.info(f"Found {len(mermaid_blocks)} Mermaid blocks for syntax check")
+
+    for i, block in enumerate(mermaid_blocks):
+        logger.debug(f"Processing Mermaid block {i+1}")
         diagram_text = block.strip()
         lines = diagram_text.split("\n")
         corrected_lines = []
@@ -218,11 +383,14 @@ def check_mermaid_syntax(task_output: TaskOutput):
             corrected_line = re.sub(
                 r"\|.*?\|>", lambda match: match.group(0).replace("|>", "|"), line
             )
+            if corrected_line != line:
+                logger.debug(f"Corrected syntax in line: {line} -> {corrected_line}")
             corrected_lines.append(corrected_line)
 
         text = text.replace(block, "\n".join(corrected_lines))
 
     task_output.raw = text
+    logger.info("Mermaid syntax check completed")
     return (True, task_output)
 
 
@@ -299,32 +467,48 @@ class CreateDocumentationFlow(Flow[DocumentationState]):
     # No need for AI Agents on this step, so we just use regular Python code
     @start()
     def clone_repo(self):
-        print(f"# Cloning repository: {self.state.project_url}\n")
+        logger.info(f"Cloning repository: {self.state.project_url}")
 
         # Check if directory exists
         if Path(self.state.repo_path).exists() and any(
             Path(self.state.repo_path).iterdir()
         ):
-            print(f"# Repository directory already exists at {self.state.repo_path}\n")
+            logger.info(
+                f"Repository directory already exists at {self.state.repo_path}"
+            )
             subprocess.run(["rm", "-rf", self.state.repo_path])
-            print("# Removed existing directory\n")
+            logger.info("Removed existing directory")
             # Recreate the directory
             Path(self.state.repo_path).mkdir(exist_ok=True)
 
         # Clone the repository
-        subprocess.run(["git", "clone", self.state.project_url, self.state.repo_path])
+        logger.info("Starting git clone operation")
+        try:
+            subprocess.run(
+                ["git", "clone", self.state.project_url, self.state.repo_path],
+                check=True,
+            )
+            logger.info("Repository cloned successfully")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to clone repository: {e}")
+            raise
         return self.state
 
     @listen(clone_repo)
     def plan_docs(self):
-        print(f"# Planning documentation for: {self.state.repo_path}\n")
+        logger.info(f"Planning documentation for: {self.state.repo_path}")
         # Convert Path to string for CrewAI
         repo_path_str = str(self.state.repo_path)
-        result = planning_crew.kickoff(inputs={"repo_path": repo_path_str})
-        print(f"# Planned docs for {self.state.repo_path}:")
-        for doc in result.pydantic.docs:
-            print(f"    - {doc.title}")
-        return result
+
+        try:
+            result = planning_crew.kickoff(inputs={"repo_path": repo_path_str})
+            logger.info(f"Documentation planning completed")
+            for doc in result.pydantic.docs:
+                logger.info(f"Planned document: {doc.title}")
+            return result
+        except Exception as e:
+            logger.error(f"Error in documentation planning: {e}")
+            raise
 
     @listen(plan_docs)
     def save_plan(self, plan):
@@ -332,33 +516,49 @@ class CreateDocumentationFlow(Flow[DocumentationState]):
         docs_dir = Path(self.state.output_path)
         docs_dir.mkdir(exist_ok=True)
 
-        with open(docs_dir / "plan.json", "w") as f:
-            f.write(plan.raw)
+        plan_file = docs_dir / "plan.json"
+        logger.info(f"Saving documentation plan to {plan_file}")
+        try:
+            with open(plan_file, "w") as f:
+                f.write(plan.raw)
+            logger.info("Documentation plan saved successfully")
+        except Exception as e:
+            logger.error(f"Failed to save documentation plan: {e}")
+            raise
 
     @listen(plan_docs)
     def create_docs(self, plan):
+        logger.info("Starting documentation creation process")
         for doc in plan.pydantic.docs:
-            print(f"\n# Creating documentation for: {doc.title}")
-            result = documentation_crew.kickoff(
-                inputs={
-                    "repo_path": str(self.state.repo_path),
-                    "title": doc.title,
-                    "overview": plan.pydantic.overview,
-                    "description": doc.description,
-                    "prerequisites": doc.prerequisites,
-                    "examples": "\n".join(doc.examples),
-                    "goal": doc.goal,
-                }
-            )
+            logger.info(f"Creating documentation for: {doc.title}")
+            try:
+                result = documentation_crew.kickoff(
+                    inputs={
+                        "repo_path": str(self.state.repo_path),
+                        "title": doc.title,
+                        "overview": plan.pydantic.overview,
+                        "description": doc.description,
+                        "prerequisites": doc.prerequisites,
+                        "examples": "\n".join(doc.examples),
+                        "goal": doc.goal,
+                    }
+                )
 
-            # Save documentation to file in output folder
-            docs_dir = Path(self.state.output_path)
-            docs_dir.mkdir(exist_ok=True)
-            title = doc.title.lower().replace(" ", "_") + ".mdx"
-            self.state.docs.append(str(docs_dir / title))
-            with open(docs_dir / title, "w") as f:
-                f.write(result.raw)
-        print(f"\n# Documentation created for: {self.state.repo_path}")
+                # Save documentation to file in output folder
+                docs_dir = Path(self.state.output_path)
+                docs_dir.mkdir(exist_ok=True)
+                title = doc.title.lower().replace(" ", "_") + ".mdx"
+                doc_file = docs_dir / title
+                self.state.docs.append(str(doc_file))
+
+                with open(doc_file, "w") as f:
+                    f.write(result.raw)
+                logger.info(f"Documentation saved to {doc_file}")
+            except Exception as e:
+                logger.error(f"Error creating documentation for {doc.title}: {e}")
+                continue
+
+        logger.info(f"Documentation creation completed for: {self.state.repo_path}")
 
 
 ### --> Implementing helper methods to plot and execute the flow in a Jupyter notebook
@@ -373,8 +573,14 @@ from IPython.display import IFrame
 IFrame(src="./crewai_flow.html", width="100%", height=400)
 
 ### --> ' Run Documentation Flow
-flow = CreateDocumentationFlow()
-flow.kickoff()
+logger.info("Starting documentation flow")
+try:
+    flow = CreateDocumentationFlow()
+    flow.kickoff()
+    logger.info("Documentation flow completed successfully")
+except Exception as e:
+    logger.error(f"Error during documentation flow execution: {e}", exc_info=True)
+    raise
 
 ### --> Plot One of the Documents
 # List all files in docs folder and display the first doc using IPython.display
@@ -382,17 +588,18 @@ from IPython.display import Markdown, display
 import pathlib
 
 docs_dir = output_path
-print("Documentation files generated:")
-for doc_file in docs_dir.glob("*.mdx"):
-    print(f"- {doc_file}")
+logger.info("Documentation files generated:")
+doc_files = list(docs_dir.glob("*.mdx"))
+for doc_file in doc_files:
+    logger.info(f"- {doc_file}")
 
-print("\nDisplaying contents of first doc:\n")
-if flow.state.docs:
-    first_doc = Path(flow.state.docs[0]).read_text()
+if doc_files:
+    logger.info("Displaying contents of first doc")
+    first_doc = Path(doc_files[0]).read_text()
     try:
         display(Markdown(first_doc))
     except NameError:
-        # If not running in Jupyter, just print the markdown
-        print(first_doc)
+        # If not running in Jupyter, just log the path
+        logger.info(f"First document available at: {doc_files[0]}")
 else:
-    print("No documentation files were generated.")
+    logger.warning("No documentation files were generated.")
