@@ -65,6 +65,9 @@ class JobTracker:
         self.stop_tracking = False
         self.progress_step = 0
         self.repo_url = ""
+        self.output_format = "mdx"
+        self.last_poll_time = 0
+        self.poll_interval = 2  # seconds
 
     def reset(self):
         self.current_job_id = None
@@ -75,14 +78,18 @@ class JobTracker:
         self.stop_tracking = False
         self.progress_step = 0
         self.repo_url = ""
+        self.output_format = "mdx"
+        self.last_poll_time = 0
 
-    def track_job(self, job_id, repo_url):
+    def track_job(self, job_id, repo_url, output_format="mdx"):
         self.current_job_id = job_id
         self.status = "submitted"
         self.message = "Job submitted successfully"
         self.stop_tracking = False
         self.progress_step = 0
         self.repo_url = repo_url
+        self.output_format = output_format
+        self.last_poll_time = time.time()
 
         # Start tracking in a separate thread
         tracking_thread = threading.Thread(target=self._track_progress)
@@ -90,32 +97,68 @@ class JobTracker:
         tracking_thread.start()
 
     def _track_progress(self):
+        consecutive_failures = 0
+        max_failures = 3
+
         while not self.stop_tracking and self.current_job_id:
             try:
-                response = requests.get(f"{STATUS_ENDPOINT}/{self.current_job_id}")
-                if response.status_code == 200:
-                    data = response.json()
-                    self.status = data.get("status", "unknown")
-                    self.message = data.get("message", "")
+                current_time = time.time()
+                if current_time - self.last_poll_time >= self.poll_interval:
+                    self.last_poll_time = current_time
 
-                    # Update progress step based on status
-                    for i, (stage, _) in enumerate(PROGRESS_STAGES):
-                        if stage == self.status:
-                            self.progress_step = i
-                            break
+                    response = requests.get(f"{STATUS_ENDPOINT}/{self.current_job_id}")
+                    if response.status_code == 200:
+                        data = response.json()
+                        old_status = self.status
+                        self.status = data.get("status", "unknown")
+                        self.message = data.get("message", "")
 
-                    if data.get("plan"):
-                        self.plan = data.get("plan")
+                        # Log status change for debugging
+                        if old_status != self.status:
+                            print(f"Job status changed: {old_status} -> {self.status}")
 
-                    if data.get("docs"):
-                        self.docs = data.get("docs")
+                        # Update progress step based on status
+                        for i, (stage, _) in enumerate(PROGRESS_STAGES):
+                            if stage == self.status:
+                                self.progress_step = i
+                                break
 
-                    if self.status in ["completed", "failed"]:
-                        self.stop_tracking = True
+                        if data.get("plan"):
+                            self.plan = data.get("plan")
+
+                        if data.get("docs"):
+                            self.docs = data.get("docs")
+
+                        # Reset failure counter on successful request
+                        consecutive_failures = 0
+
+                        # Only stop tracking if we've reached a terminal state
+                        if self.status in ["completed", "failed"]:
+                            print(
+                                f"Job {self.current_job_id} reached terminal state: {self.status}"
+                            )
+                            time.sleep(1)  # Wait a moment to ensure UI updates
+                            self.stop_tracking = True
+                    else:
+                        consecutive_failures += 1
+                        print(
+                            f"Error response from API: {response.status_code} - {response.text}"
+                        )
             except Exception as e:
-                self.message = f"Error tracking job: {str(e)}"
+                consecutive_failures += 1
+                print(f"Error tracking job: {str(e)}")
 
-            time.sleep(2)  # Poll every 2 seconds
+            # Stop tracking after too many consecutive failures
+            if consecutive_failures >= max_failures:
+                print(
+                    f"Stopping job tracking after {consecutive_failures} consecutive failures"
+                )
+                self.message = (
+                    f"Lost connection to server. Please refresh status manually."
+                )
+                self.stop_tracking = True
+
+            time.sleep(1)  # Check frequently but avoid overwhelming the server
 
 
 job_tracker = JobTracker()
@@ -178,7 +221,7 @@ def render_markdown(md_text):
     return html_content
 
 
-def submit_job(repo_url: str):
+def submit_job(repo_url: str, output_format: str):
     """Submit a documentation generation job to the API"""
     if not repo_url or not repo_url.strip():
         return (
@@ -193,17 +236,29 @@ def submit_job(repo_url: str):
         job_tracker.reset()
 
         # Submit the job
-        response = requests.post(GENERATE_ENDPOINT, json={"github_url": repo_url})
+        response = requests.post(
+            GENERATE_ENDPOINT,
+            json={"github_url": repo_url, "output_format": output_format},
+        )
 
         if response.status_code == 200:
             data = response.json()
             job_id = data.get("job_id")
 
             # Start tracking the job
-            job_tracker.track_job(job_id, repo_url)
+            job_tracker.track_job(job_id, repo_url, output_format)
+
+            # Create a more detailed response message with the job ID
+            message = f"""
+            <div style="padding: 10px; border-left: 4px solid #4CAF50; background-color: #f9f9f9;">
+                <p><strong>Job submitted successfully!</strong></p>
+                <p>Job ID: <code>{job_id}</code></p>
+                <p>Output Format: <strong>{output_format.upper()}</strong></p>
+            </div>
+            """
 
             return (
-                f"Job submitted with ID: {job_id}",
+                message,
                 generate_progress_html(),
                 None,
                 None,
@@ -221,7 +276,11 @@ def generate_progress_html():
 
     html_content = f"""
     <div class="progress-container">
-        <h3 style="margin-bottom: 1.5rem; color: #1f2937;">Processing Repository: {html.escape(job_tracker.repo_url)}</h3>
+        <h3 style="margin-bottom: 1rem; color: #1f2937;">Processing Repository: {html.escape(job_tracker.repo_url)}</h3>
+        <div class="job-info" style="background: #f0f7ff; padding: 10px; border-radius: 6px; margin-bottom: 15px;">
+            <p style="margin-bottom: 5px;"><strong>Job ID:</strong> <code>{job_tracker.current_job_id}</code></p>
+            <p style="margin-bottom: 1rem;"><strong>Output Format:</strong> <span style="font-weight: bold;">{job_tracker.output_format.upper()}</span></p>
+        </div>
         <div style="margin: 20px 0;">
     """
 
@@ -421,36 +480,182 @@ def poll_status():
 
 
 def refresh_status():
-    # Return the latest status, progress, plan, docs
+    """Manual refresh of job status - always retrieves fresh data from API"""
+    job_id = job_tracker.current_job_id
+
+    if not job_id:
+        return (
+            "No active job to refresh. Please submit a new job.",
+            None,
+            None,
+            None,
+        )
+
     try:
-        # Force a status update from the backend
-        if job_tracker.current_job_id:
-            response = requests.get(f"{STATUS_ENDPOINT}/{job_tracker.current_job_id}")
-            if response.status_code == 200:
-                data = response.json()
-                job_tracker.status = data.get("status", "unknown")
-                job_tracker.message = data.get("message", "")
+        print(f"Manually refreshing status for job: {job_id}")
+        # Always make a direct API call to get fresh status
+        response = requests.get(f"{STATUS_ENDPOINT}/{job_id}")
 
-                # Update progress step based on status
-                for i, (stage, _) in enumerate(PROGRESS_STAGES):
-                    if stage == job_tracker.status:
-                        job_tracker.progress_step = i
-                        break
+        if response.status_code == 200:
+            # Get fresh data from API
+            data = response.json()
+            current_status = data.get("status", "unknown")
+            current_message = data.get("message", "")
+            current_plan = data.get("plan")
+            current_docs = data.get("docs", [])
 
-                if data.get("plan"):
-                    job_tracker.plan = data.get("plan")
+            # Update the job tracker with latest data
+            job_tracker.status = current_status
+            job_tracker.message = current_message
 
-                if data.get("docs"):
-                    job_tracker.docs = data.get("docs")
+            # Important: Update progress step based on freshly retrieved status
+            for i, (stage, _) in enumerate(PROGRESS_STAGES):
+                if stage == current_status:
+                    job_tracker.progress_step = i
+                    break
+
+            if current_plan:
+                job_tracker.plan = current_plan
+
+            if current_docs:
+                job_tracker.docs = current_docs
+
+            print(f"Manual refresh complete. Current status: {current_status}")
+
+            # Reset the stop_tracking flag if it was set incorrectly
+            if current_status not in ["completed", "failed"]:
+                job_tracker.stop_tracking = False
+            elif (
+                current_status in ["completed", "failed"]
+                and not job_tracker.stop_tracking
+            ):
+                # If job is completed/failed but we're still tracking, stop tracking
+                job_tracker.stop_tracking = True
+                print(f"Job {job_id} has {current_status}. Stopping tracking.")
+
+            # Build response for UI
+            return (
+                f"Job status: {current_status} - {current_message}",
+                generate_progress_html(),
+                current_plan,
+                current_docs,
+            )
+        else:
+            error_msg = (
+                f"Error refreshing job status: {response.status_code} - {response.text}"
+            )
+            print(error_msg)
+            return (error_msg, generate_progress_html(), None, None)
     except Exception as e:
-        job_tracker.message = f"Error refreshing status: {str(e)}"
+        error_msg = f"Error refreshing status: {str(e)}"
+        print(f"Error in manual refresh: {str(e)}")
+        return (
+            error_msg,
+            generate_progress_html(),
+            None,
+            None,
+        )
 
-    return (
-        f"Job status: {job_tracker.status} - {job_tracker.message}",
-        generate_progress_html(),
-        job_tracker.plan,
-        job_tracker.docs,
-    )
+
+def load_specific_job():
+    """Load a specific job (d868ddf8-485f-42ef-a7f3-d7acdcf4a5c1) for display"""
+    specific_job_id = "d868ddf8-485f-42ef-a7f3-d7acdcf4a5c1"
+    try:
+        # Check if API is available first
+        try:
+            health_check = requests.get(f"{API_BASE_URL}/health", timeout=2)
+            if health_check.status_code != 200:
+                return (
+                    "API server appears to be unavailable. Please ensure the API is running.",
+                    None,
+                    None,
+                    None,
+                )
+        except requests.exceptions.RequestException:
+            return (
+                "Unable to connect to API server. Please ensure the API is running at "
+                + API_BASE_URL,
+                None,
+                None,
+                None,
+            )
+
+        response = requests.get(f"{STATUS_ENDPOINT}/{specific_job_id}")
+        if response.status_code == 200:
+            data = response.json()
+            job_tracker.current_job_id = specific_job_id
+            job_tracker.status = data.get("status", "unknown")
+            job_tracker.message = data.get("message", "")
+            job_tracker.repo_url = data.get("github_url", "Unknown repository")
+            job_tracker.output_format = data.get("output_format", "mdx")
+
+            # Update progress step based on status
+            for i, (stage, _) in enumerate(PROGRESS_STAGES):
+                if stage == job_tracker.status:
+                    job_tracker.progress_step = i
+                    break
+
+            if data.get("plan"):
+                job_tracker.plan = data.get("plan")
+
+            if data.get("docs"):
+                job_tracker.docs = data.get("docs")
+
+            return (
+                f"Loaded job: {specific_job_id} - Status: {job_tracker.status}",
+                generate_progress_html(),
+                job_tracker.plan,
+                job_tracker.docs,
+            )
+        else:
+            # Job not found - provide a helpful message instead of an error
+            return (
+                "Welcome to the NVIDIA NIM Documentation Generator. Enter a GitHub repository URL and select an output format to generate documentation.",
+                None,
+                None,
+                None,
+            )
+    except Exception as e:
+        return (
+            f"Error connecting to the API: {str(e)}. Please ensure the API server is running.",
+            None,
+            None,
+            None,
+        )
+
+
+# Create a function to check if we should load the job on startup
+def should_auto_load_job():
+    """Check if we should auto-load the job on startup"""
+    welcome_msg = "Welcome to the NVIDIA NIM Documentation Generator. Enter a GitHub repository URL and select an output format to generate documentation."
+
+    # Check if API is available
+    try:
+        health_check = requests.get(f"{API_BASE_URL}/health", timeout=2)
+        if health_check.status_code != 200:
+            return welcome_msg, None, None, None
+
+        # Try to check if job exists before auto-loading
+        specific_job_id = "d868ddf8-485f-42ef-a7f3-d7acdcf4a5c1"
+        response = requests.get(f"{STATUS_ENDPOINT}/{specific_job_id}")
+        if response.status_code == 200:
+            # Job exists, load it
+            return load_specific_job()
+        else:
+            # Job doesn't exist, just show welcome message
+            return welcome_msg, None, None, None
+    except requests.exceptions.RequestException:
+        # API not available, show welcome message
+        return welcome_msg, None, None, None
+
+
+def auto_refresh_status():
+    """Automatically refresh status if a job is running"""
+    # Only refresh if we have an active job
+    if job_tracker.current_job_id and not job_tracker.stop_tracking:
+        print(f"Auto-refreshing status for job: {job_tracker.current_job_id}")
+        return refresh_status()
+    return None, None, None, None
 
 
 def create_ui():
@@ -596,13 +801,21 @@ def create_ui():
                         label="GitHub Repository URL",
                         placeholder="https://github.com/username/repository",
                     )
+                    output_format = gr.Radio(
+                        choices=["mdx", "pdf", "docx"],
+                        value="mdx",
+                        label="Output Format",
+                        info="Select the format for generated documentation files",
+                    )
                     generate_btn = gr.Button(
                         "Generate Documentation",
                         variant="primary",
                         elem_classes="button-primary",
                     )
                     refresh_btn = gr.Button(
-                        "🔄 Refresh Status", elem_classes="button-primary"
+                        "🔄 Refresh Status (Click periodically to update)",
+                        elem_classes="button-primary",
+                        variant="primary",
                     )
 
         # Output section
@@ -620,14 +833,26 @@ def create_ui():
         # Set up event handler for the generate button
         generate_btn.click(
             fn=submit_job,
-            inputs=[repo_url],
+            inputs=[repo_url, output_format],
             outputs=[status_output, progress_output, plan_output, docs_output],
         )
 
-        # Re-added click handler for the manual refresh button
+        # Manual refresh button with more emphasis
         refresh_btn.click(
             fn=refresh_status,
-            inputs=[],  # refresh_status takes no inputs by default
+            inputs=[],
+            outputs=[status_output, progress_output, plan_output, docs_output],
+        )
+
+        # Simple welcome message
+        app.load(
+            fn=lambda: (
+                "Welcome to the NVIDIA NIM Documentation Generator. Enter a GitHub repository URL to start.",
+                None,
+                None,
+                None,
+            ),
+            inputs=[],
             outputs=[status_output, progress_output, plan_output, docs_output],
         )
 

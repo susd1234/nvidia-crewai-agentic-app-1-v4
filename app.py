@@ -10,7 +10,7 @@ import threading
 import yaml
 import subprocess
 from pydantic import BaseModel, Field
-from typing import List, Dict, Optional, Union, Any
+from typing import List, Dict, Optional, Union, Any, Literal
 import uuid
 import json
 
@@ -21,6 +21,14 @@ import nest_asyncio
 import functools
 import inspect
 import litellm
+
+# Add imports for document conversion
+import docx
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet
+import markdown
+import re
 
 # Configure logging first
 logging.basicConfig(
@@ -321,6 +329,7 @@ class DocumentationState(BaseModel):
     repo_path: str
     docs: List[str] = []
     output_path: str
+    output_format: Literal["mdx", "pdf", "docx"] = "mdx"
 
     model_config = {
         "arbitrary_types_allowed": True,
@@ -473,18 +482,108 @@ class CreateDocumentationFlow(Flow[DocumentationState]):
 
                 docs_dir = Path(self.state.output_path)
                 docs_dir.mkdir(exist_ok=True)
-                title = doc.title.lower().replace(" ", "_") + ".mdx"
-                doc_file = docs_dir / title
-                self.state.docs.append(str(doc_file))
 
-                with open(doc_file, "w") as f:
-                    f.write(result.raw)
-                logger.info(f"Documentation saved to {doc_file}")
+                # Create file path based on selected format
+                base_title = doc.title.lower().replace(" ", "_")
+
+                if self.state.output_format == "mdx":
+                    file_ext = ".mdx"
+                    doc_file = docs_dir / f"{base_title}{file_ext}"
+                    with open(doc_file, "w") as f:
+                        f.write(result.raw)
+                    logger.info(f"Documentation saved to {doc_file}")
+                elif self.state.output_format == "pdf":
+                    file_ext = ".pdf"
+                    doc_file = docs_dir / f"{base_title}{file_ext}"
+                    convert_markdown_to_pdf(result.raw, doc_file)
+                elif self.state.output_format == "docx":
+                    file_ext = ".docx"
+                    doc_file = docs_dir / f"{base_title}{file_ext}"
+                    convert_markdown_to_docx(result.raw, doc_file)
+
+                self.state.docs.append(str(doc_file))
             except Exception as e:
                 logger.error(f"Error creating documentation for {doc.title}: {e}")
                 continue
 
         logger.info(f"Documentation creation completed for: {self.state.repo_path}")
+
+
+def convert_markdown_to_pdf(markdown_content, output_file):
+    """Convert markdown content to PDF format"""
+    logger.info(f"Converting markdown to PDF: {output_file}")
+    try:
+        # Parse markdown content
+        html_content = markdown.markdown(
+            markdown_content, extensions=["extra", "codehilite"]
+        )
+
+        # Create PDF document - convert Path object to string if needed
+        output_file_str = str(output_file)
+        doc = SimpleDocTemplate(output_file_str, pagesize=letter)
+        styles = getSampleStyleSheet()
+        story = []
+
+        # Split content into paragraphs
+        paragraphs = re.split(r"\n\n+", html_content)
+
+        for p in paragraphs:
+            # Clean up HTML tags (simple approach)
+            p = re.sub(r"<[^>]*>", "", p)
+            if p.strip():
+                story.append(Paragraph(p, styles["Normal"]))
+                story.append(Spacer(1, 12))
+
+        doc.build(story)
+        logger.info(f"PDF created successfully: {output_file}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to convert to PDF: {e}")
+        return False
+
+
+def convert_markdown_to_docx(markdown_content, output_file):
+    """Convert markdown content to DOCX format"""
+    logger.info(f"Converting markdown to DOCX: {output_file}")
+    try:
+        # Create docx document
+        doc = docx.Document()
+
+        # Add a title
+        title_match = re.search(r"^#\s+(.+)", markdown_content, re.MULTILINE)
+        if title_match:
+            doc.add_heading(title_match.group(1), 0)
+
+        # Process content
+        paragraphs = re.split(r"\n\n+", markdown_content)
+
+        for p in paragraphs:
+            # Skip the title we already processed
+            if p.startswith("# ") and p == title_match.group(0):
+                continue
+
+            # Handle headings
+            heading_match = re.match(r"^(#{1,6})\s+(.+)", p)
+            if heading_match:
+                level = len(heading_match.group(1))
+                doc.add_heading(heading_match.group(2), level)
+            else:
+                # Handle code blocks
+                if p.startswith("```") and p.endswith("```"):
+                    code = p.split("\n", 1)[1].rsplit("\n", 1)[0]
+                    doc.add_paragraph(code, style="Code")
+                else:
+                    # Regular paragraph
+                    doc.add_paragraph(p)
+
+        # Convert Path object to string if needed
+        output_file_str = str(output_file)
+        doc.save(output_file_str)
+        logger.info(f"DOCX created successfully: {output_file}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to convert to DOCX: {e}")
+        return False
 
 
 # When running as a standalone script
@@ -493,6 +592,22 @@ if __name__ == "__main__":
     project_url = input(
         "Please enter the GitHub repository URL (e.g., https://github.com/username/repository): "
     ).strip()
+
+    # Get output format preference
+    while True:
+        output_format = (
+            input("Select output format (mdx, pdf, docx) [default: mdx]: ")
+            .strip()
+            .lower()
+        )
+
+        if not output_format:
+            output_format = "mdx"
+
+        if output_format in ["mdx", "pdf", "docx"]:
+            break
+        else:
+            print("Invalid format. Please choose mdx, pdf, or docx.")
 
     # Set up execution paths
     repo_name = project_url.split("/")[-1]
@@ -516,7 +631,10 @@ if __name__ == "__main__":
 
     # Initialize with state
     state = DocumentationState(
-        project_url=project_url, repo_path=str(input_path), output_path=str(output_path)
+        project_url=project_url,
+        repo_path=str(input_path),
+        output_path=str(output_path),
+        output_format=output_format,
     )
 
     # Plot the flow (optional)
@@ -542,11 +660,17 @@ if __name__ == "__main__":
     # Display results
     docs_dir = output_path
     logger.info("Documentation files generated:")
-    doc_files = list(docs_dir.glob("*.mdx"))
+    file_pattern = f"*.{state.output_format}"
+    if state.output_format == "pdf":
+        file_pattern = "*.pdf"
+    elif state.output_format == "docx":
+        file_pattern = "*.docx"
+
+    doc_files = list(docs_dir.glob(file_pattern))
     for doc_file in doc_files:
         logger.info(f"- {doc_file}")
 
-    if doc_files:
+    if doc_files and state.output_format == "mdx":
         logger.info("Displaying contents of first doc")
         first_doc = Path(doc_files[0]).read_text()
         try:
@@ -556,4 +680,6 @@ if __name__ == "__main__":
         except (ImportError, NameError):
             logger.info(f"First document available at: {doc_files[0]}")
     else:
-        logger.warning("No documentation files were generated.")
+        logger.info(
+            f"Documentation files saved in {output_format.upper()} format at: {docs_dir}"
+        )

@@ -5,8 +5,8 @@ from pathlib import Path
 import logging
 import traceback
 import subprocess
-from typing import Dict, List, Optional
-from fastapi import FastAPI, BackgroundTasks, HTTPException
+from typing import Dict, List, Optional, Literal
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -164,6 +164,10 @@ class DocumentationRequest(BaseModel):
     email: Optional[str] = Field(
         None, description="Email to notify when documentation is complete"
     )
+    output_format: Literal["mdx", "pdf", "docx"] = Field(
+        "mdx",
+        description="Format of the generated documentation files (mdx, pdf, docx)",
+    )
 
 
 class DocumentationResponse(BaseModel):
@@ -178,12 +182,15 @@ class JobStatusResponse(BaseModel):
     message: str
     docs: Optional[List[str]] = None
     plan: Optional[str] = None
+    output_format: Optional[str] = None
 
 
-def generate_documentation_background(job_id: str, github_url: str):
+def generate_documentation_background(
+    job_id: str, github_url: str, output_format: str = "mdx"
+):
     """Background task to generate documentation"""
     api_logger.info(
-        f"Starting documentation generation for job {job_id} - Repository: {github_url}"
+        f"Starting documentation generation for job {job_id} - Repository: {github_url}, Format: {output_format}"
     )
     try:
         job_store[job_id]["status"] = "running"
@@ -228,7 +235,13 @@ def generate_documentation_background(job_id: str, github_url: str):
 
         # 2. Import the necessary modules from app.py for documentation generation
         api_logger.info("Importing modules for documentation generation")
-        from app import planning_crew, documentation_crew, logger
+        from app import (
+            planning_crew,
+            documentation_crew,
+            logger,
+            convert_markdown_to_pdf,
+            convert_markdown_to_docx,
+        )
 
         # 3. Generate documentation plan
         api_logger.info(
@@ -268,12 +281,24 @@ def generate_documentation_background(job_id: str, github_url: str):
                         }
                     )
 
-                    title = doc.title.lower().replace(" ", "_") + ".mdx"
-                    doc_file = docs_dir / title
-                    generated_docs.append(str(doc_file))
+                    base_title = doc.title.lower().replace(" ", "_")
 
-                    with open(doc_file, "w") as f:
-                        f.write(result.raw)
+                    if output_format == "mdx":
+                        file_ext = ".mdx"
+                        doc_file = docs_dir / f"{base_title}{file_ext}"
+                        with open(doc_file, "w") as f:
+                            f.write(result.raw)
+                        api_logger.info(f"Documentation saved to {doc_file}")
+                    elif output_format == "pdf":
+                        file_ext = ".pdf"
+                        doc_file = docs_dir / f"{base_title}{file_ext}"
+                        convert_markdown_to_pdf(result.raw, doc_file)
+                    elif output_format == "docx":
+                        file_ext = ".docx"
+                        doc_file = docs_dir / f"{base_title}{file_ext}"
+                        convert_markdown_to_docx(result.raw, doc_file)
+
+                    generated_docs.append(str(doc_file))
                     api_logger.info(f"Documentation saved to {doc_file}")
                 except Exception as e:
                     api_logger.error(
@@ -285,11 +310,12 @@ def generate_documentation_background(job_id: str, github_url: str):
 
             # Update job with the results
             job_store[job_id]["docs"] = generated_docs
+            job_store[job_id]["output_format"] = output_format
 
             job_store[job_id]["status"] = "completed"
             job_store[job_id][
                 "message"
-            ] = f"Documentation generation completed successfully. Generated {len(generated_docs)} files."
+            ] = f"Documentation generation completed successfully. Generated {len(generated_docs)} {output_format.upper()} files."
             api_logger.info(f"Job {job_id} marked as completed")
 
         except Exception as e:
@@ -317,6 +343,29 @@ async def generate_documentation(
     Generate documentation for a GitHub repository.
     Returns a job ID that can be used to check the status of the job.
     """
+    # SusanD
+    api_logger.info(" ")
+    api_logger.info(
+        "**********************************************************************************"
+    )
+    api_logger.info(
+        "*       This is an NVIDIA NIM & Agentic AI Powered App Development Work          *"
+    )
+    api_logger.info(
+        "*                                                                                *"
+    )
+    api_logger.info(
+        "* --->  Processing Started - Agentic AI Based Code Documentation Generator  <--- *"
+    )
+    api_logger.info(
+        "*                                                                                *"
+    )
+    api_logger.info(
+        "**********************************************************************************"
+    )
+    api_logger.info(" ")
+    # SusanD
+
     job_id = str(uuid.uuid4())
 
     job_store[job_id] = {
@@ -324,18 +373,22 @@ async def generate_documentation(
         "message": "Job queued for processing",
         "github_url": request.github_url,
         "email": request.email,
+        "output_format": request.output_format,
         "docs": [],
         "created_at": datetime.datetime.now().isoformat(),
     }
 
     background_tasks.add_task(
-        generate_documentation_background, job_id, request.github_url
+        generate_documentation_background,
+        job_id,
+        request.github_url,
+        request.output_format,
     )
 
     return DocumentationResponse(
         job_id=job_id,
         status="queued",
-        message="Documentation generation job queued successfully",
+        message=f"Documentation generation job queued successfully. Output format: {request.output_format}",
     )
 
 
@@ -355,6 +408,7 @@ async def get_job_status(job_id: str):
         message=job["message"],
         docs=job.get("docs"),
         plan=job.get("plan"),
+        output_format=job.get("output_format"),
     )
 
 
@@ -370,6 +424,7 @@ async def list_jobs():
             message=job["message"],
             docs=job.get("docs"),
             plan=job.get("plan"),
+            output_format=job.get("output_format"),
         )
         for job_id, job in job_store.items()
     ]

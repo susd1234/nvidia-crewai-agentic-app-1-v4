@@ -16,3 +16,11 @@ ipykernel
 jupyter
 langchain_nvidia_ai_endpoints
 markdown
+nest-asyncio
+pygraphviz
+watchdog
+python-docx
+reportlab
+# mdx-to-html
+pypdf
+markdown2pdf
