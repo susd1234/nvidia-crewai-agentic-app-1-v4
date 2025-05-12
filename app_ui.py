@@ -936,4 +936,4 @@ def create_ui():
 
 if __name__ == "__main__":
     app = create_ui()
-    app.launch(share=True)
+    app.launch(server_name="0.0.0.0", server_port=7860, share=True)

@@ -1,0 +1,29 @@
+version: "3.8"
+
+services:
+  app:
+    build: .
+    container_name: nvidia-crewai-app
+    ports:
+      - "8000:8000"
+      - "7860:7860"
+    volumes:
+      - ./workdir:/app/workdir
+      - ./data:/app/data
+      - ./db:/app/db
+    environment:
+      - NVIDIA_API_KEY=${NVIDIA_API_KEY}
+      - NVIDIA_NIM_API_KEY=${NVIDIA_NIM_API_KEY}
+      - NVIDIA_BASE_URL=${NVIDIA_BASE_URL}
+      - NVIDIA_CHAT_MODEL=${NVIDIA_CHAT_MODEL}
+      - NVIDIA_EMBEDDING_MODEL=${NVIDIA_EMBEDDING_MODEL}
+      - LOG_LEVEL=${LOG_LEVEL}
+      - MAX_RETRIES=${MAX_RETRIES}
+      - TIMEOUT=${TIMEOUT}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s

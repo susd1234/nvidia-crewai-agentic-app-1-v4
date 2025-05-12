@@ -25,6 +25,8 @@ class NoLiteLLMFilter(logging.Filter):
             return False
         if "Wrapper: Completed Call" in record.getMessage():
             return False
+        if "change detected" in record.getMessage():
+            return False
         return True
 
 
@@ -57,6 +59,9 @@ try:
         "httpx",
         "httpcore",
         "openai",
+        "watchdog",
+        "watchdog.observers",
+        "watchdog.events",
     ]:
         log = logging.getLogger(logger_name)
         log.setLevel(logging.CRITICAL)
