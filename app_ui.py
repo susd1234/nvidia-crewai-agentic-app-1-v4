@@ -65,9 +65,13 @@ class JobTracker:
         self.stop_tracking = False
         self.progress_step = 0
         self.repo_url = ""
-        self.output_format = "mdx"
+        self.output_format = "pdf"  # Default to PDF
         self.last_poll_time = 0
         self.poll_interval = 2  # seconds
+        self.consecutive_failures = 0
+        self.max_failures = 3
+        self.last_status_update = None
+        self.file_type_icons = {"pdf": "📄", "mdx": "📝", "docx": "📘"}
 
     def reset(self):
         self.current_job_id = None
@@ -78,18 +82,22 @@ class JobTracker:
         self.stop_tracking = False
         self.progress_step = 0
         self.repo_url = ""
-        self.output_format = "mdx"
+        self.output_format = "pdf"
         self.last_poll_time = 0
+        self.consecutive_failures = 0
+        self.last_status_update = None
 
-    def track_job(self, job_id, repo_url, output_format="mdx"):
+    def track_job(self, job_id, repo_url, output_format="pdf"):
         self.current_job_id = job_id
         self.status = "submitted"
         self.message = "Job submitted successfully"
         self.stop_tracking = False
         self.progress_step = 0
         self.repo_url = repo_url
-        self.output_format = output_format
+        self.output_format = output_format.lower()  # Normalize format
         self.last_poll_time = time.time()
+        self.consecutive_failures = 0
+        self.last_status_update = time.time()
 
         # Start tracking in a separate thread
         tracking_thread = threading.Thread(target=self._track_progress)
@@ -97,9 +105,6 @@ class JobTracker:
         tracking_thread.start()
 
     def _track_progress(self):
-        consecutive_failures = 0
-        max_failures = 3
-
         while not self.stop_tracking and self.current_job_id:
             try:
                 current_time = time.time()
@@ -116,6 +121,7 @@ class JobTracker:
                         # Log status change for debugging
                         if old_status != self.status:
                             print(f"Job status changed: {old_status} -> {self.status}")
+                            self.last_status_update = current_time
 
                         # Update progress step based on status
                         for i, (stage, _) in enumerate(PROGRESS_STAGES):
@@ -130,7 +136,7 @@ class JobTracker:
                             self.docs = data.get("docs")
 
                         # Reset failure counter on successful request
-                        consecutive_failures = 0
+                        self.consecutive_failures = 0
 
                         # Only stop tracking if we've reached a terminal state
                         if self.status in ["completed", "failed"]:
@@ -140,25 +146,35 @@ class JobTracker:
                             time.sleep(1)  # Wait a moment to ensure UI updates
                             self.stop_tracking = True
                     else:
-                        consecutive_failures += 1
-                        print(
-                            f"Error response from API: {response.status_code} - {response.text}"
-                        )
+                        self.consecutive_failures += 1
+                        if self.consecutive_failures >= self.max_failures:
+                            print(
+                                f"Too many consecutive failures ({self.consecutive_failures}), stopping tracking"
+                            )
+                            self.stop_tracking = True
+                        time.sleep(self.poll_interval)  # Wait before retrying
+                else:
+                    time.sleep(0.1)  # Small sleep to prevent CPU spinning
             except Exception as e:
-                consecutive_failures += 1
-                print(f"Error tracking job: {str(e)}")
+                print(f"Error in tracking thread: {str(e)}")
+                self.consecutive_failures += 1
+                if self.consecutive_failures >= self.max_failures:
+                    self.stop_tracking = True
+                time.sleep(self.poll_interval)
 
-            # Stop tracking after too many consecutive failures
-            if consecutive_failures >= max_failures:
-                print(
-                    f"Stopping job tracking after {consecutive_failures} consecutive failures"
-                )
-                self.message = (
-                    f"Lost connection to server. Please refresh status manually."
-                )
-                self.stop_tracking = True
+    def get_file_type_icon(self):
+        return self.file_type_icons.get(self.output_format, "📄")
 
-            time.sleep(1)  # Check frequently but avoid overwhelming the server
+    def get_status_age(self):
+        if not self.last_status_update:
+            return "N/A"
+        age = time.time() - self.last_status_update
+        if age < 60:
+            return f"{int(age)}s ago"
+        elif age < 3600:
+            return f"{int(age/60)}m ago"
+        else:
+            return f"{int(age/3600)}h ago"
 
 
 job_tracker = JobTracker()
@@ -270,21 +286,27 @@ def submit_job(repo_url: str, output_format: str):
 
 
 def generate_progress_html():
-    """Generate HTML for the progress animation"""
+    """Generate HTML for the progress animation with enhanced file type support"""
     if job_tracker.status == "idle":
         return None
 
+    file_icon = job_tracker.get_file_type_icon()
+    status_age = job_tracker.get_status_age()
+
     html_content = f"""
     <div class="progress-container">
-        <h3 style="margin-bottom: 1rem; color: #1f2937;">Processing Repository: {html.escape(job_tracker.repo_url)}</h3>
+        <h3 style="margin-bottom: 1rem; color: #1f2937;">
+            {file_icon} Processing Repository: {html.escape(job_tracker.repo_url)}
+        </h3>
         <div class="job-info" style="background: #f0f7ff; padding: 10px; border-radius: 6px; margin-bottom: 15px;">
             <p style="margin-bottom: 5px;"><strong>Job ID:</strong> <code>{job_tracker.current_job_id}</code></p>
-            <p style="margin-bottom: 1rem;"><strong>Output Format:</strong> <span style="font-weight: bold;">{job_tracker.output_format.upper()}</span></p>
+            <p style="margin-bottom: 5px;"><strong>Output Format:</strong> <span style="font-weight: bold;">{job_tracker.output_format.upper()}</span></p>
+            <p style="margin-bottom: 1rem;"><strong>Last Update:</strong> <span style="color: #666;">{status_age}</span></p>
         </div>
         <div style="margin: 20px 0;">
     """
 
-    # Add progress steps
+    # Add progress steps with enhanced styling
     for i, (stage, description) in enumerate(PROGRESS_STAGES):
         status_class = (
             "completed"
@@ -302,12 +324,22 @@ def generate_progress_html():
             else "⟳" if i == job_tracker.progress_step else "○"
         )
 
+        # Add file type specific styling for the generating stage
+        stage_style = ""
+        if stage == "generating" and i == job_tracker.progress_step:
+            stage_style = f"""
+                <div style="background: #f8f9fa; padding: 8px; border-radius: 4px; margin-top: 5px;">
+                    <span style="color: #666;">Generating {job_tracker.output_format.upper()} documentation...</span>
+                </div>
+            """
+
         html_content += f"""
-        <div class="progress-step {status_class}">
-            <div class="progress-icon {icon_class}">{icon}</div>
-            <div style="flex-grow: 1;">
+        <div class="progress-step {status_class}" style="margin-bottom: 15px; padding: 10px; border-radius: 6px; background: {'#f0f7ff' if i == job_tracker.progress_step else 'transparent'};">
+            <div class="progress-icon {icon_class}" style="display: inline-block; width: 24px; height: 24px; line-height: 24px; text-align: center; border-radius: 50%; background: {'#4CAF50' if i < job_tracker.progress_step else '#2196F3' if i == job_tracker.progress_step else '#e0e0e0'}; color: white; margin-right: 10px;">{icon}</div>
+            <div style="flex-grow: 1; display: inline-block;">
                 <div style="font-weight: bold; color: #1f2937;">{description}</div>
                 {f'<div style="color: #666; font-size: 0.9em; margin-top: 5px;">{job_tracker.message}</div>' if i == job_tracker.progress_step else ''}
+                {stage_style if i == job_tracker.progress_step else ''}
             </div>
         </div>
         """
@@ -480,7 +512,7 @@ def poll_status():
 
 
 def refresh_status():
-    """Manual refresh of job status - always retrieves fresh data from API"""
+    """Manual refresh of job status with enhanced file type handling and correct UI output types"""
     job_id = job_tracker.current_job_id
 
     if not job_id:
@@ -507,6 +539,7 @@ def refresh_status():
             # Update the job tracker with latest data
             job_tracker.status = current_status
             job_tracker.message = current_message
+            job_tracker.last_status_update = time.time()
 
             # Important: Update progress step based on freshly retrieved status
             for i, (stage, _) in enumerate(PROGRESS_STAGES):
@@ -514,11 +547,35 @@ def refresh_status():
                     job_tracker.progress_step = i
                     break
 
+            # Parse plan as JSON for Gradio JSON output
             if current_plan:
-                job_tracker.plan = current_plan
+                try:
+                    plan_json = json.loads(current_plan)
+                except Exception:
+                    plan_json = {}
+                job_tracker.plan = plan_json
+            else:
+                plan_json = {}
+                job_tracker.plan = plan_json
 
+            # Only keep files with the right extension for docs (case-insensitive, mdx accepts .mdx and .md)
             if current_docs:
-                job_tracker.docs = current_docs
+                if job_tracker.output_format == "mdx":
+                    docs_files = [
+                        f
+                        for f in current_docs
+                        if f.lower().endswith(".mdx") or f.lower().endswith(".md")
+                    ]
+                else:
+                    docs_files = [
+                        f
+                        for f in current_docs
+                        if f.lower().endswith(f".{job_tracker.output_format}")
+                    ]
+            else:
+                docs_files = []
+            print("Filtered docs for UI:", docs_files)
+            job_tracker.docs = docs_files
 
             print(f"Manual refresh complete. Current status: {current_status}")
 
@@ -533,12 +590,21 @@ def refresh_status():
                 job_tracker.stop_tracking = True
                 print(f"Job {job_id} has {current_status}. Stopping tracking.")
 
-            # Build response for UI
+            # Build response for UI with file type specific message
+            status_message = f"""
+            <div style="padding: 10px; border-left: 4px solid {'#4CAF50' if current_status == 'completed' else '#f44336' if current_status == 'failed' else '#2196F3'}; background-color: #f9f9f9;">
+                <p><strong>Job Status:</strong> {current_status.upper()}</p>
+                <p><strong>Output Format:</strong> {job_tracker.output_format.upper()}</p>
+                <p><strong>Last Update:</strong> {job_tracker.get_status_age()}</p>
+                <p>{current_message}</p>
+            </div>
+            """
+
             return (
-                f"Job status: {current_status} - {current_message}",
+                status_message,
                 generate_progress_html(),
-                current_plan,
-                current_docs,
+                plan_json,
+                docs_files,
             )
         elif response.status_code == 404:
             # Job not found - reset the tracker and show a helpful message
