@@ -2,6 +2,10 @@
 
 An AI-powered documentation generator that uses NVIDIA's AI endpoints and CrewAI to automatically create comprehensive documentation for any GitHub repository.
 
+
+<img width="1732" alt="image" src="https://github.com/user-attachments/assets/53a60e6d-b847-4223-aa44-67f8ecf19ace" />
+
+
 ## Features
 
 - Analyzes GitHub repositories to understand their structure and purpose
