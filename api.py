@@ -13,7 +13,23 @@ from pydantic import BaseModel, Field
 import sys
 
 
-# Custom filter to remove LiteLLM logs
+# Configure logging first
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+
+# Set higher logging levels for LiteLLM related loggers
+logging.getLogger("litellm").setLevel(logging.CRITICAL)
+logging.getLogger("LiteLLM").setLevel(logging.CRITICAL)
+logging.getLogger("litellm.cost_calculator").setLevel(logging.CRITICAL)
+logging.getLogger("litellm.llms").setLevel(logging.CRITICAL)
+logging.getLogger("litellm.litellm").setLevel(logging.CRITICAL)
+logging.getLogger("litellm.utils").setLevel(logging.CRITICAL)
+
+
+# Configure a custom filter for logs
 class NoLiteLLMFilter(logging.Filter):
     def filter(self, record):
         if record.name.startswith("litellm") or "LiteLLM" in record.getMessage():
@@ -31,47 +47,13 @@ class NoLiteLLMFilter(logging.Filter):
         return True
 
 
-# Configure logging for API
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+# Add filter to root logger to prevent duplicate messages
+root_logger = logging.getLogger()
+root_logger.addFilter(NoLiteLLMFilter())
 
-# Set higher logging levels for LiteLLM related loggers
-logging.getLogger("litellm").setLevel(logging.CRITICAL)
-logging.getLogger("LiteLLM").setLevel(logging.CRITICAL)
-logging.getLogger("litellm.cost_calculator").setLevel(logging.CRITICAL)
-logging.getLogger("litellm.llms").setLevel(logging.CRITICAL)
-logging.getLogger("litellm.litellm").setLevel(logging.CRITICAL)
-logging.getLogger("litellm.utils").setLevel(logging.CRITICAL)
-
-# Add filter to root logger handlers
-for handler in logging.root.handlers:
-    handler.addFilter(NoLiteLLMFilter())
-
+# Create API logger
 api_logger = logging.getLogger("api")
 api_logger.setLevel(logging.INFO)
-
-# Add handler with filter to API logger
-api_handler = logging.StreamHandler(sys.stdout)
-api_handler.setLevel(logging.INFO)
-api_handler.addFilter(NoLiteLLMFilter())
-api_logger.addHandler(api_handler)
-
-# Disable propagation for LiteLLM loggers
-for logger_name in [
-    "litellm",
-    "LiteLLM",
-    "litellm.cost_calculator",
-    "litellm.llms",
-    "litellm.litellm",
-    "litellm.utils",
-]:
-    logger_obj = logging.getLogger(logger_name)
-    logger_obj.propagate = False
-    logger_obj.setLevel(logging.CRITICAL)
-    logger_obj.addHandler(logging.NullHandler())
 
 # Import from app.py
 planning_crew = None

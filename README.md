@@ -6,7 +6,7 @@ An AI-powered documentation generator that uses NVIDIA's AI endpoints and CrewAI
 
 - Analyzes GitHub repositories to understand their structure and purpose
 - Creates a documentation plan based on the repository analysis
-- Generates MDX documentation files with rich content and examples
+- Generates documentation in multiple formats (MDX, PDF, DOCX)
 - Includes Mermaid diagrams to visualize complex concepts
 - Provides a FastAPI interface for integrating with other applications
 - Features a user-friendly Gradio UI for easy interaction
@@ -62,7 +62,7 @@ Run the application to generate documentation for a GitHub repository:
 python app.py
 ```
 
-You'll be prompted to enter a GitHub repository URL. The application will clone the repository, analyze it, and generate documentation in the `workdir` directory.
+You'll be prompted to enter a GitHub repository URL and select an output format (MDX, PDF, or DOCX). The application will clone the repository, analyze it, and generate documentation in the `workdir` directory.
 
 ### API Interface
 
@@ -84,7 +84,8 @@ Request body:
 ```json
 {
   "github_url": "https://github.com/username/repository",
-  "email": "optional-email@example.com"
+  "email": "optional-email@example.com",
+  "output_format": "mdx" // Options: "mdx", "pdf", "docx"
 }
 ```
 
@@ -93,7 +94,7 @@ Response:
 {
   "job_id": "unique-job-id",
   "status": "queued",
-  "message": "Documentation generation job queued successfully"
+  "message": "Documentation generation job queued successfully. Output format: mdx"
 }
 ```
 
@@ -110,7 +111,8 @@ Response:
   "status": "completed|running|failed|queued",
   "message": "Status message",
   "docs": ["list", "of", "generated", "files"],
-  "plan": "Documentation plan in JSON format"
+  "plan": "Documentation plan in JSON format",
+  "output_format": "mdx" // or "pdf", "docx"
 }
 ```
 
@@ -145,10 +147,13 @@ Response:
 ```python
 import requests
 
-# Start a documentation generation job
+# Start a documentation generation job with PDF output
 response = requests.post(
     "http://localhost:8000/generate",
-    json={"github_url": "https://github.com/username/repository"}
+    json={
+        "github_url": "https://github.com/username/repository",
+        "output_format": "pdf"  // Options: "mdx", "pdf", "docx"
+    }
 )
 job_id = response.json()["job_id"]
 
@@ -165,7 +170,6 @@ If you need to run the components separately:
 ```bash
 python run_api.py
 ```
-
 ### Run just the Gradio UI:
 ```bash
 python app_ui.py
@@ -174,3 +178,4 @@ python app_ui.py
 ## License
 
 [Insert license information here]
+
