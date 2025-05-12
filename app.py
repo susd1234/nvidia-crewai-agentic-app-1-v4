@@ -329,7 +329,7 @@ class DocumentationState(BaseModel):
     repo_path: str
     docs: List[str] = []
     output_path: str
-    output_format: Literal["mdx", "pdf", "docx"] = "mdx"
+    output_format: Literal["mdx", "pdf", "docx"] = "pdf"
 
     model_config = {
         "arbitrary_types_allowed": True,

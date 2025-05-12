@@ -540,6 +540,15 @@ def refresh_status():
                 current_plan,
                 current_docs,
             )
+        elif response.status_code == 404:
+            # Job not found - reset the tracker and show a helpful message
+            job_tracker.reset()
+            return (
+                "The previous job is no longer available. Please submit a new job.",
+                None,
+                None,
+                None,
+            )
         else:
             error_msg = (
                 f"Error refreshing job status: {response.status_code} - {response.text}"
@@ -802,8 +811,8 @@ def create_ui():
                         placeholder="https://github.com/username/repository",
                     )
                     output_format = gr.Radio(
-                        choices=["mdx", "pdf", "docx"],
-                        value="mdx",
+                        choices=["pdf", "mdx", "docx"],
+                        value="pdf",
                         label="Output Format",
                         info="Select the format for generated documentation files",
                     )

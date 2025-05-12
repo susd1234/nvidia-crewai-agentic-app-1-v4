@@ -146,8 +146,8 @@ class DocumentationRequest(BaseModel):
     email: Optional[str] = Field(
         None, description="Email to notify when documentation is complete"
     )
-    output_format: Literal["mdx", "pdf", "docx"] = Field(
-        "mdx",
+    output_format: Literal["pdf", "mdx", "docx"] = Field(
+        "pdf",
         description="Format of the generated documentation files (mdx, pdf, docx)",
     )
 
