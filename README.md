@@ -1,4 +1,4 @@
-# NVIDIA NIM & Agentic AI Powered GitHub Repo Documentation Generator App
+# NVIDIA NIM & Agentic AI Powered - Comprehensive GitHub Repo Documentation Generator App
 
 Tech Stack
 
