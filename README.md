@@ -1,6 +1,15 @@
-# Documentation Generator
+# NVIDIA NIM & Agentic AI Powered GitHub Repo Documentation Generator App
 
-An AI-powered documentation generator that uses NVIDIA's AI endpoints and CrewAI to automatically create comprehensive documentation for any GitHub repository.
+Tech Stack
+
+LIM Model (NVIDIA NIM) - meta/1lama-3.1-70b-instruct (LLM Model)
+Embedding (NVIDIA NIM) - nvidia/nemo-retriever-e5-large
+Agentic AI Framework - Crew AI
+Vector Database - ChromaDB
+I/P - GitHub Repo Clone Link
+Generated O/P File Types - PDE / MDX / DOCX
+
+An AI-powered documentation generator that uses NVIDIA's AI endpoints and CrewAI to create comprehensive documentation for any GitHub repository automatically.
 
 # UI
 <img width="1732" alt="image" src="https://github.com/user-attachments/assets/53a60e6d-b847-4223-aa44-67f8ecf19ace" />
